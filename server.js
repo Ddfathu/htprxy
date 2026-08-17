@@ -1,46 +1,55 @@
+import net from 'net';
 import http from 'http';
 
 const PORT = process.env.PORT || 8080;
 
-const server = http.createServer((req, res) => {
-  // Ambil host tujuan dari header (default ke speed.cloudflare.com)
-  const targetHost = req.headers['host'] || 'speed.cloudflare.com';
+// Buat Server TCP Murni di Layer 4 (Mendukung VLESS, Trojan, HTTPS & HTTP)
+const server = net.createServer((clientSocket) => {
+  let isFirstPacket = true;
+  let targetSocket = null;
 
-  // Siapkan header forwarding untuk Cloudflare
-  const headers = { ...req.headers };
-  headers['host'] = targetHost;
-  delete headers['connection'];
+  clientSocket.on('data', (chunk) => {
+    if (isFirstPacket) {
+      isFirstPacket = false;
+      const dataStr = chunk.toString('utf-8');
 
-  const options = {
-    hostname: targetHost,
-    port: 80,
-    path: req.url || '/',
-    method: req.method,
-    headers: headers,
-    timeout: 5000
-  };
+      // 1. JIKA REQUEST ADALAH HTTP CHECKER (Untuk Bot / Web Scanner)
+      if (dataStr.startsWith('GET ') || dataStr.startsWith('POST ') || dataStr.startsWith('HEAD ')) {
+        const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
+        const targetHost = hostMatch ? hostMatch[1] : 'speed.cloudflare.com';
+        const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-  // Kirim HTTP request ke server Cloudflare
-  const proxyReq = http.request(options, (proxyRes) => {
-    // Teruskan semua header asli dari Cloudflare (cf-ray, cf-ipcountry, dll)
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(res);
+        targetSocket = net.connect(targetPort, targetHost, () => {
+          targetSocket.write(chunk);
+          targetSocket.pipe(clientSocket);
+          clientSocket.pipe(targetSocket);
+        });
+
+        targetSocket.on('error', () => clientSocket.destroy());
+        return;
+      }
+
+      // 2. JIKA TRAFFIC ADALAH VLESS / TROJAN / ENCRYPTED STREAM (DarkTunnel)
+      // Teruskan langsung ke Cloudflare Edge Port 443 / Target Outbound
+      targetSocket = net.connect(443, '1.1.1.1', () => {
+        targetSocket.write(chunk);
+        targetSocket.pipe(clientSocket);
+        clientSocket.pipe(targetSocket);
+      });
+
+      targetSocket.on('error', () => clientSocket.destroy());
+    }
   });
 
-  proxyReq.on('error', (err) => {
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end(`Bad Gateway: ${err.message}`);
+  clientSocket.on('error', () => {
+    if (targetSocket) targetSocket.destroy();
   });
 
-  proxyReq.on('timeout', () => {
-    proxyReq.destroy();
-    res.writeHead(504, { 'Content-Type': 'text/plain' });
-    res.end('Gateway Timeout');
+  clientSocket.on('close', () => {
+    if (targetSocket) targetSocket.destroy();
   });
-
-  req.pipe(proxyReq);
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Pure HTTP Proxy running on port ${PORT}`);
+  console.log(`Cloudflare VLESS ProxyIP Engine running on port ${PORT}`);
 });
