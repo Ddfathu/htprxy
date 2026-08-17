@@ -1,4 +1,5 @@
 import net from 'net';
+import dns from 'dns';
 
 const PORT = process.env.PORT || 8080;
 
@@ -11,37 +12,39 @@ const server = net.createServer((clientSocket) => {
       isFirstPacket = false;
       const dataStr = chunk.toString('utf-8');
 
-      // 1. JIKA REQUEST ADALAH HTTP CHECKER (Scanner Bot / Vercel Web)
-      if (
-        dataStr.startsWith('GET ') ||
-        dataStr.startsWith('POST ') ||
-        dataStr.startsWith('HEAD ')
-      ) {
-        // Ekstrak Host tujuan asli dari request header
+      // 1. JIKA REQUEST ADALAH SCANNER (HTTP GET/POST)
+      if (dataStr.startsWith('GET ') || dataStr.startsWith('POST ') || dataStr.startsWith('HEAD ')) {
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
-        const targetHost = hostMatch ? hostMatch[1] : 'cp.cloudflare.com';
+        const targetHost = hostMatch ? hostMatch[1] : 'speed.cloudflare.com';
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-        // Resolve langsung ke domain host tujuannya (bukan ke 1.1.1.1 agar bebas error 1034)
-        targetSocket = net.connect(targetPort, targetHost, () => {
+        dns.lookup(targetHost, (err, address) => {
+          if (err) return clientSocket.destroy();
+
+          targetSocket = net.connect(targetPort, address, () => {
+            targetSocket.write(chunk);
+            targetSocket.pipe(clientSocket);
+            clientSocket.pipe(targetSocket);
+          });
+
+          targetSocket.on('error', () => clientSocket.destroy());
+        });
+        return;
+      }
+
+      // 2. JIKA LALU LINTAS VLESS / TROJAN (DARKTUNNEL)
+      // Resolve DNS dynamic Cloudflare Edge Anycast
+      dns.lookup('speed.cloudflare.com', (err, address) => {
+        if (err) address = '104.16.123.96'; // Fallback Cloudflare IP
+
+        targetSocket = net.connect(443, address, () => {
           targetSocket.write(chunk);
           targetSocket.pipe(clientSocket);
           clientSocket.pipe(targetSocket);
         });
 
         targetSocket.on('error', () => clientSocket.destroy());
-        return;
-      }
-
-      // 2. JIKA TRAFFIC ADALAH VLESS / TROJAN / DATA STREAM (DarkTunnel)
-      // Sambungkan langsung ke Cloudflare Edge Gateway via domain resmi
-      targetSocket = net.connect(80, 'cp.cloudflare.com', () => {
-        targetSocket.write(chunk);
-        targetSocket.pipe(clientSocket);
-        clientSocket.pipe(targetSocket);
       });
-
-      targetSocket.on('error', () => clientSocket.destroy());
     }
   });
 
@@ -55,5 +58,5 @@ const server = net.createServer((clientSocket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`ProxyIP Server running on port ${PORT}`);
+  console.log(`Dynamic DNS ProxyIP running on port ${PORT}`);
 });
