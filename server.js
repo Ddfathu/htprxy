@@ -3,6 +3,16 @@ import dns from 'dns';
 
 const PORT = process.env.PORT || 8080;
 
+// Cache IP Cloudflare di awal agar koneksi instan
+let cachedCfIp = '104.16.123.96';
+function refreshDnsCache() {
+  dns.lookup('speed.cloudflare.com', (err, addr) => {
+    if (!err && addr) cachedCfIp = addr;
+  });
+}
+refreshDnsCache();
+setInterval(refreshDnsCache, 1000 * 60 * 10); // Refresh tiap 10 menit
+
 const server = net.createServer((clientSocket) => {
   let isFirstPacket = true;
   let targetSocket = null;
@@ -12,39 +22,30 @@ const server = net.createServer((clientSocket) => {
       isFirstPacket = false;
       const dataStr = chunk.toString('utf-8');
 
-      // 1. JIKA REQUEST ADALAH SCANNER (HTTP GET/POST)
+      // 1. Scanner HTTP (Bot / Web Vercel)
       if (dataStr.startsWith('GET ') || dataStr.startsWith('POST ') || dataStr.startsWith('HEAD ')) {
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
-        const targetHost = hostMatch ? hostMatch[1] : 'speed.cloudflare.com';
+        const targetHost = hostMatch ? hostMatch[1] : cachedCfIp;
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-        dns.lookup(targetHost, (err, address) => {
-          if (err) return clientSocket.destroy();
-
-          targetSocket = net.connect(targetPort, address, () => {
-            targetSocket.write(chunk);
-            targetSocket.pipe(clientSocket);
-            clientSocket.pipe(targetSocket);
-          });
-
-          targetSocket.on('error', () => clientSocket.destroy());
-        });
-        return;
-      }
-
-      // 2. JIKA LALU LINTAS VLESS / TROJAN (DARKTUNNEL)
-      // Resolve DNS dynamic Cloudflare Edge Anycast
-      dns.lookup('speed.cloudflare.com', (err, address) => {
-        if (err) address = '104.16.123.96'; // Fallback Cloudflare IP
-
-        targetSocket = net.connect(443, address, () => {
+        targetSocket = net.connect(targetPort, targetHost === 'speed.cloudflare.com' ? cachedCfIp : targetHost, () => {
           targetSocket.write(chunk);
           targetSocket.pipe(clientSocket);
           clientSocket.pipe(targetSocket);
         });
 
         targetSocket.on('error', () => clientSocket.destroy());
+        return;
+      }
+
+      // 2. Traffic VLESS / Trojan DarkTunnel (Pakai Cached IP Instan)
+      targetSocket = net.connect(443, cachedCfIp, () => {
+        targetSocket.write(chunk);
+        targetSocket.pipe(clientSocket);
+        clientSocket.pipe(targetSocket);
       });
+
+      targetSocket.on('error', () => clientSocket.destroy());
     }
   });
 
@@ -58,5 +59,5 @@ const server = net.createServer((clientSocket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Dynamic DNS ProxyIP running on port ${PORT}`);
+  console.log(`Optimized ProxyIP running on port ${PORT}`);
 });
