@@ -10,15 +10,20 @@ const server = net.createServer((clientSocket) => {
   clientSocket.on('data', (chunk) => {
     if (isFirstPacket) {
       isFirstPacket = false;
+
+      // Cek apakah request berupa teks HTTP Plain
       const dataStr = chunk.toString('utf-8');
 
-      // 1. REQUEST HTTP (Scanner / Web Browsing)
-      if (dataStr.startsWith('GET ') || dataStr.startsWith('POST ') || dataStr.startsWith('HEAD ')) {
+      // 1. REQUEST HTTP BIASA (Scanner / Bot Vercel)
+      if (
+        dataStr.startsWith('GET ') ||
+        dataStr.startsWith('POST ') ||
+        dataStr.startsWith('HEAD ')
+      ) {
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
         const targetHost = hostMatch ? hostMatch[1].trim() : 'speed.cloudflare.com';
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-        // Resolve DNS resmi domain tersebut agar bebas Error 1034
         dns.lookup(targetHost, (err, address) => {
           if (err) return clientSocket.destroy();
 
@@ -33,7 +38,7 @@ const server = net.createServer((clientSocket) => {
         return;
       }
 
-      // 2. REQUEST HTTPS / HTTP CONNECT
+      // 2. REQUEST HTTPS CONNECT
       if (dataStr.startsWith('CONNECT ')) {
         const match = dataStr.match(/CONNECT\s+([^:\s]+):(\d+)/i);
         if (match) {
@@ -55,11 +60,16 @@ const server = net.createServer((clientSocket) => {
         }
       }
 
-      // 3. TRAFFIC STREAM VLESS / TROJAN (DARKTUNNEL)
-      dns.lookup('speed.cloudflare.com', (err, address) => {
-        const ipTarget = !err && address ? address : '104.16.123.96';
+      // 3. STREAM TLS / VLESS / TROJAN (DARKTUNNEL)
+      // Ekstrak SNI (Server Name Indication) dari paket TLS Client Hello
+      const sni = parseTlsSni(chunk);
+      const destinationHost = sni || 'speed.cloudflare.com';
+      const destinationPort = 443;
 
-        targetSocket = net.connect(443, ipTarget, () => {
+      dns.lookup(destinationHost, (err, address) => {
+        if (err) return clientSocket.destroy();
+
+        targetSocket = net.connect(destinationPort, address, () => {
           targetSocket.write(chunk);
           targetSocket.pipe(clientSocket);
           clientSocket.pipe(targetSocket);
@@ -79,6 +89,48 @@ const server = net.createServer((clientSocket) => {
   });
 });
 
+// Helper parser SNI domain dari Client Hello TLS
+function parseTlsSni(buffer) {
+  try {
+    if (buffer[0] !== 0x16) return null; // Bukan Handshake TLS
+    let pos = 43;
+    if (pos >= buffer.length) return null;
+
+    const sessionIdLen = buffer[pos];
+    pos += 1 + sessionIdLen;
+
+    const cipherSuitesLen = buffer.readUInt16BE(pos);
+    pos += 2 + cipherSuitesLen;
+
+    const compMethodsLen = buffer[pos];
+    pos += 1 + compMethodsLen;
+
+    if (pos >= buffer.length) return null;
+    const extensionsLen = buffer.readUInt16BE(pos);
+    pos += 2;
+
+    const endExtensions = pos + extensionsLen;
+    while (pos + 4 <= endExtensions && pos + 4 <= buffer.length) {
+      const extType = buffer.readUInt16BE(pos);
+      const extLen = buffer.readUInt16BE(pos + 2);
+      pos += 4;
+
+      if (extType === 0) { // SNI Extension
+        const sniListLen = buffer.readUInt16BE(pos);
+        let sniPos = pos + 2;
+        if (buffer[sniPos] === 0) { // Host Name type
+          const nameLen = buffer.readUInt16BE(sniPos + 1);
+          return buffer.toString('utf8', sniPos + 3, sniPos + 3 + nameLen);
+        }
+      }
+      pos += extLen;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Dynamic DNS Proxy running on port ${PORT}`);
+  console.log(`Smart SNI Proxy running on port ${PORT}`);
 });
