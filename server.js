@@ -3,7 +3,7 @@ import dns from 'dns';
 
 const PORT = process.env.PORT || 8080;
 
-// State Konfigurasi DNS Aktif
+// Konfigurasi State DNS Aktif
 let DNS_CONFIG = {
   mode: 'DOH', // 'DOH' atau 'UDP'
   dohUrl: 'https://cloudflare-dns.com/dns-query',
@@ -27,7 +27,7 @@ const dnsCache = new Map();
 async function resolveDomain(hostname) {
   const now = Date.now();
   const cached = dnsCache.get(hostname);
-  if (cached && (now - cached.time < 1000 * 60 * 5)) {
+  if (cached && (now - cached.time < 1000 * 60 * 10)) {
     return cached.ip;
   }
 
@@ -35,7 +35,7 @@ async function resolveDomain(hostname) {
     return hostname;
   }
 
-  // 1. RESOLVER JIKA MODE DOH (Termasuk Custom DoH)
+  // 1. Resolver DoH
   if (DNS_CONFIG.mode === 'DOH') {
     try {
       const url = new URL(DNS_CONFIG.dohUrl);
@@ -44,7 +44,7 @@ async function resolveDomain(hostname) {
 
       const res = await fetch(url.toString(), {
         headers: { 'Accept': 'application/dns-json' },
-        signal: AbortSignal.timeout(2000)
+        signal: AbortSignal.timeout(1800)
       });
       const data = await res.json();
       if (data.Answer && data.Answer.length > 0) {
@@ -57,7 +57,7 @@ async function resolveDomain(hostname) {
     } catch (_) {}
   }
 
-  // 2. RESOLVER JIKA MODE UDP (Termasuk Custom UDP)
+  // 2. Resolver UDP Custom
   if (DNS_CONFIG.mode === 'UDP' && DNS_CONFIG.udpServer) {
     try {
       const resolver = new dns.Resolver();
@@ -85,20 +85,36 @@ async function resolveDomain(hostname) {
   });
 }
 
-// Server TCP Hybrid (Layer 4 Forwarder + HTTP Web Server)
-const server = net.createServer({ noDelay: true }, (clientSocket) => {
+// Server TCP Super High-Throughput (Tahan Beban Download/Speedtest Ekstrem)
+const server = net.createServer({ 
+  noDelay: true,
+  allowHalfOpen: false,
+  pauseOnConnect: false
+}, (clientSocket) => {
   clientSocket.setNoDelay(true);
-  clientSocket.setKeepAlive(true, 10000);
+  clientSocket.setKeepAlive(true, 5000);
+  clientSocket.setMaxListeners(0);
 
   let isFirstPacket = true;
   let targetSocket = null;
+
+  // Fungsi Piping Anti-Bottleneck / Anti-Lag
+  const bridgeSockets = (sockA, sockB) => {
+    sockA.pipe(sockB, { end: true });
+    sockB.pipe(sockA, { end: true });
+
+    sockA.on('error', () => { sockB.destroy(); });
+    sockB.on('error', () => { sockA.destroy(); });
+    sockA.on('close', () => { sockB.destroy(); });
+    sockB.on('close', () => { sockA.destroy(); });
+  };
 
   clientSocket.on('data', async (chunk) => {
     if (isFirstPacket) {
       isFirstPacket = false;
       const dataStr = chunk.toString('utf-8');
 
-      // 1. CEK REQUEST DASHBOARD ATAU API GANTI DNS
+      // 1. CEK WEB DASHBOARD / SET-DNS API
       if (dataStr.startsWith('GET /') || dataStr.startsWith('POST /api/set-dns')) {
         const firstLine = dataStr.split('\r\n')[0];
         const path = firstLine.split(' ')[1] || '/';
@@ -140,7 +156,7 @@ const server = net.createServer({ noDelay: true }, (clientSocket) => {
           return;
         }
 
-        // 2. SCANNER HTTP (speed.cloudflare.com / target scanner luar)
+        // 2. SCANNER HTTP (speed.cloudflare.com / Target Eksternal)
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
         const targetHost = hostMatch ? hostMatch[1].trim() : 'speed.cloudflare.com';
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
@@ -148,17 +164,16 @@ const server = net.createServer({ noDelay: true }, (clientSocket) => {
         const resolvedIp = await resolveDomain(targetHost);
         targetSocket = net.connect({ host: resolvedIp, port: targetPort, noDelay: true }, () => {
           targetSocket.setNoDelay(true);
-          targetSocket.setKeepAlive(true, 10000);
+          targetSocket.setKeepAlive(true, 5000);
           targetSocket.write(chunk);
-          targetSocket.pipe(clientSocket);
-          clientSocket.pipe(targetSocket);
+          bridgeSockets(clientSocket, targetSocket);
         });
 
         targetSocket.on('error', () => clientSocket.destroy());
         return;
       }
 
-      // 3. HTTPS CONNECT
+      // 3. HTTPS CONNECT PROXY
       if (dataStr.startsWith('CONNECT ')) {
         const match = dataStr.match(/CONNECT\s+([^:\s]+):(\d+)/i);
         if (match) {
@@ -168,10 +183,9 @@ const server = net.createServer({ noDelay: true }, (clientSocket) => {
 
           targetSocket = net.connect({ host: resolvedIp, port: targetPort, noDelay: true }, () => {
             targetSocket.setNoDelay(true);
-            targetSocket.setKeepAlive(true, 10000);
+            targetSocket.setKeepAlive(true, 5000);
             clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-            targetSocket.pipe(clientSocket);
-            clientSocket.pipe(targetSocket);
+            bridgeSockets(clientSocket, targetSocket);
           });
 
           targetSocket.on('error', () => clientSocket.destroy());
@@ -179,17 +193,16 @@ const server = net.createServer({ noDelay: true }, (clientSocket) => {
         }
       }
 
-      // 4. TRAFIK STREAM VLESS / TROJAN (DarkTunnel)
+      // 4. TRAFIK SPEEDTEST & VLESS / TROJAN STREAM (DARKTUNNEL)
       const sni = parseTlsSni(chunk);
       const destinationHost = sni || 'speed.cloudflare.com';
       const resolvedIp = await resolveDomain(destinationHost);
 
       targetSocket = net.connect({ host: resolvedIp, port: 443, noDelay: true }, () => {
         targetSocket.setNoDelay(true);
-        targetSocket.setKeepAlive(true, 10000);
+        targetSocket.setKeepAlive(true, 5000);
         targetSocket.write(chunk);
-        targetSocket.pipe(clientSocket);
-        clientSocket.pipe(targetSocket);
+        bridgeSockets(clientSocket, targetSocket);
       });
 
       targetSocket.on('error', () => clientSocket.destroy());
@@ -220,7 +233,6 @@ function parseTlsSni(buffer) {
       const extLen = buffer.readUInt16BE(pos + 2);
       pos += 4;
       if (extType === 0) {
-        const sniListLen = buffer.readUInt16BE(pos);
         let sniPos = pos + 2;
         if (buffer[sniPos] === 0) {
           const nameLen = buffer.readUInt16BE(sniPos + 1);
@@ -239,32 +251,33 @@ function renderDashboardHTML() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Proxy DNS Control Panel</title>
+  <title>Proxy Engine & DNS Panel</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; background: #080c14; color: #00ffcc; padding: 20px; display: flex; justify-content: center; }
-    .card { background: #0f172a; border: 1px solid #00ffcc; box-shadow: 0 0 25px rgba(0,255,204,0.2); border-radius: 12px; max-width: 480px; width: 100%; padding: 22px; box-sizing: border-box; }
-    h2 { margin-top: 0; color: #38bdf8; text-align: center; font-size: 1.25rem; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #06090e; color: #00ffcc; padding: 20px; display: flex; justify-content: center; }
+    .card { background: #0d131f; border: 1px solid #00ffcc; box-shadow: 0 0 25px rgba(0,255,204,0.25); border-radius: 12px; max-width: 480px; width: 100%; padding: 22px; box-sizing: border-box; }
+    h2 { margin-top: 0; color: #38bdf8; text-align: center; font-size: 1.2rem; }
     label { font-size: 0.85rem; font-weight: bold; margin-top: 14px; display: block; }
-    select, input { width: 100%; padding: 10px; background: #030712; border: 1px solid #00ffcc; border-radius: 6px; color: #fff; margin-top: 6px; box-sizing: border-box; font-family: monospace; font-size: 0.85rem; }
+    select, input { width: 100%; padding: 10px; background: #020408; border: 1px solid #00ffcc; border-radius: 6px; color: #fff; margin-top: 6px; box-sizing: border-box; font-family: monospace; font-size: 0.85rem; }
     button { width: 100%; padding: 12px; background: #00ffcc; color: #000; font-weight: bold; border: none; border-radius: 6px; margin-top: 20px; cursor: pointer; transition: 0.2s; }
     button:hover { background: #38bdf8; }
-    .status-box { background: #030712; padding: 12px; border-radius: 6px; border: 1px dashed #38bdf8; margin-top: 15px; font-size: 0.82rem; }
-    .custom-section { background: #030712; border: 1px solid #38bdf8; padding: 12px; border-radius: 6px; margin-top: 12px; }
+    .status-box { background: #020408; padding: 12px; border-radius: 6px; border: 1px dashed #38bdf8; margin-top: 15px; font-size: 0.82rem; }
+    .custom-section { background: #020408; border: 1px solid #38bdf8; padding: 12px; border-radius: 6px; margin-top: 12px; }
     .toast { display: none; padding: 10px; text-align: center; border-radius: 6px; margin-top: 12px; font-size: 0.85rem; font-weight: bold; }
     .toast.success { display: block; background: #052e16; color: #4ade80; border: 1px solid #4ade80; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>⚡ PROXY DNS & DOH MANAGER</h2>
+    <h2>⚡ HIGH-SPEED PROXY & DNS ENGINE</h2>
     <div class="status-box">
-      <strong>Active Mode:</strong> <span id="cur_mode" style="color:#38bdf8;">${DNS_CONFIG.mode}</span><br>
-      <strong>Target:</strong> <span id="cur_target" style="color:#4ade80; word-break:break-all;">${DNS_CONFIG.mode === 'DOH' ? DNS_CONFIG.dohUrl : DNS_CONFIG.udpServer + ':' + DNS_CONFIG.udpPort}</span>
+      <strong>Throughput Engine:</strong> <span style="color:#4ade80;">Active (Full-Duplex)</span><br>
+      <strong>DNS Mode:</strong> <span id="cur_mode" style="color:#38bdf8;">${DNS_CONFIG.mode}</span><br>
+      <strong>Resolver:</strong> <span id="cur_target" style="color:#4ade80; word-break:break-all;">${DNS_CONFIG.mode === 'DOH' ? DNS_CONFIG.dohUrl : DNS_CONFIG.udpServer + ':' + DNS_CONFIG.udpPort}</span>
     </div>
 
-    <label>Pilih Preset / Mode Kustom:</label>
+    <label>Pilih Resolver / Preset:</label>
     <select id="preset_select" onchange="applyPreset()">
-      <option value="cf-doh" ${DNS_CONFIG.dohUrl.includes('cloudflare') ? 'selected' : ''}>Cloudflare DoH (Official)</option>
+      <option value="cf-doh" ${DNS_CONFIG.dohUrl.includes('cloudflare') ? 'selected' : ''}>Cloudflare DoH (Fastest Anycast)</option>
       <option value="google-doh" ${DNS_CONFIG.dohUrl.includes('google') ? 'selected' : ''}>Google DoH</option>
       <option value="quad9-doh" ${DNS_CONFIG.dohUrl.includes('quad9') ? 'selected' : ''}>Quad9 DoH (Security)</option>
       <option value="adguard-doh" ${DNS_CONFIG.dohUrl.includes('adguard') ? 'selected' : ''}>AdGuard DoH (Adblock)</option>
@@ -274,34 +287,27 @@ function renderDashboardHTML() {
       <option value="custom_udp">✏️ Custom DNS UDP Pribadi (IP + Port)</option>
     </select>
 
-    <!-- FORM INPUT CUSTOM DOH -->
     <div id="box_custom_doh" class="custom-section" style="display:none;">
       <label style="margin-top:0;">DoH Endpoint URL Pribadi:</label>
       <input type="text" id="custom_doh_url" placeholder="https://dns.nextdns.io/xxxxxx" value="${DNS_CONFIG.dohUrl}">
-      <small style="color:#94a3b8; font-size:0.75rem; margin-top:4px; display:block;">Mendukung NextDNS, AdGuard Home, Pi-hole DoH, dll.</small>
     </div>
 
-    <!-- FORM INPUT CUSTOM UDP -->
     <div id="box_custom_udp" class="custom-section" style="display:none;">
       <label style="margin-top:0;">Server IP Address DNS Pribadi:</label>
       <input type="text" id="custom_udp_ip" placeholder="contoh: 94.140.14.14" value="${DNS_CONFIG.udpServer}">
-      
       <label>Port DNS (Default: 53):</label>
       <input type="number" id="custom_udp_port" placeholder="53" value="${DNS_CONFIG.udpPort || 53}">
     </div>
 
-    <button onclick="saveDns()">💾 SIMPAN & TERAPKAN DNS</button>
+    <button onclick="saveDns()">💾 SIMPAN & AKTIFKAN</button>
     <div id="toast" class="toast"></div>
   </div>
 
   <script>
     function applyPreset() {
       const val = document.getElementById('preset_select').value;
-      const dohBox = document.getElementById('box_custom_doh');
-      const udpBox = document.getElementById('box_custom_udp');
-
-      dohBox.style.display = (val === 'custom_doh') ? 'block' : 'none';
-      udpBox.style.display = (val === 'custom_udp') ? 'block' : 'none';
+      document.getElementById('box_custom_doh').style.display = (val === 'custom_doh') ? 'block' : 'none';
+      document.getElementById('box_custom_udp').style.display = (val === 'custom_udp') ? 'block' : 'none';
     }
 
     async function saveDns() {
@@ -309,10 +315,7 @@ function renderDashboardHTML() {
       let payload = {};
 
       if (selected === 'custom_doh') {
-        payload = {
-          mode: 'DOH',
-          dohUrl: document.getElementById('custom_doh_url').value.trim()
-        };
+        payload = { mode: 'DOH', dohUrl: document.getElementById('custom_doh_url').value.trim() };
       } else if (selected === 'custom_udp') {
         payload = {
           mode: 'UDP',
@@ -333,7 +336,7 @@ function renderDashboardHTML() {
         document.getElementById('cur_mode').innerText = data.config.mode;
         document.getElementById('cur_target').innerText = data.config.mode === 'DOH' ? data.config.dohUrl : data.config.udpServer + ':' + data.config.udpPort;
         const toast = document.getElementById('toast');
-        toast.innerText = '✅ DNS Berhasil Diterapkan & Cache Direset!';
+        toast.innerText = '✅ Resolver Aktif & Buffer Ready!';
         toast.className = 'toast success';
         setTimeout(() => toast.style.display = 'none', 3000);
       }
@@ -344,5 +347,5 @@ function renderDashboardHTML() {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Universal Proxy + Custom DNS Dashboard running on port ${PORT}`);
+  console.log(`High-Throughput Speedtest-Ready Proxy running on port ${PORT}`);
 });
