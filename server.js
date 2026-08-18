@@ -3,11 +3,9 @@ import dns from 'dns';
 
 const PORT = process.env.PORT || 8080;
 
-// Baca Environment Variables Railway
 const TCP_DOMAIN = process.env.RAILWAY_TCP_PROXY_DOMAIN || '';
 const TCP_PORT = process.env.RAILWAY_TCP_PROXY_PORT || '';
 
-// State Info Server Proxy Railway
 let PROXY_SERVER_INFO = {
   domain: TCP_DOMAIN,
   port: TCP_PORT,
@@ -15,14 +13,12 @@ let PROXY_SERVER_INFO = {
   fullProxy: ''
 };
 
-// Auto Resolve TCP Domain ke Real IP saat startup
 function updateRailwayProxyIP() {
   if (TCP_DOMAIN) {
     dns.lookup(TCP_DOMAIN, (err, address) => {
       if (!err && address) {
         PROXY_SERVER_INFO.ip = address;
         PROXY_SERVER_INFO.fullProxy = `${address}:${TCP_PORT}`;
-        console.log(`[RAILWAY PROXY DETECTED] -> ${PROXY_SERVER_INFO.fullProxy}`);
       } else {
         PROXY_SERVER_INFO.ip = TCP_DOMAIN;
         PROXY_SERVER_INFO.fullProxy = `${TCP_DOMAIN}:${TCP_PORT}`;
@@ -33,10 +29,8 @@ function updateRailwayProxyIP() {
   }
 }
 updateRailwayProxyIP();
-// Refresh resolusi domain Railway setiap 30 menit
 setInterval(updateRailwayProxyIP, 1000 * 60 * 30);
 
-// State Konfigurasi DNS Aktif
 let DNS_CONFIG = {
   mode: 'DOH',
   dohUrl: 'https://cloudflare-dns.com/dns-query',
@@ -53,13 +47,11 @@ const PRESETS = {
   'google-udp': { name: 'Google UDP (8.8.8.8)', type: 'UDP', host: '8.8.8.8', port: 53 }
 };
 
-// Monitor Koneksi & Akumulasi Data Total
 const activeConnections = new Map();
 let connectionIdCounter = 0;
 let globalTotalBytesIn = 0;
 let globalTotalBytesOut = 0;
 
-// In-Memory Fast DNS Cache
 const dnsCache = new Map();
 
 async function resolveDomain(hostname) {
@@ -120,7 +112,6 @@ async function resolveDomain(hostname) {
   });
 }
 
-// Server TCP Hybrid + Real-Time Traffic Tracker
 const server = net.createServer({ 
   noDelay: true,
   allowHalfOpen: false,
@@ -131,7 +122,8 @@ const server = net.createServer({
   clientSocket.setMaxListeners(0);
 
   const connId = ++connectionIdCounter;
-  const clientIp = clientSocket.remoteAddress || 'Unknown';
+  const rawIp = clientSocket.remoteAddress || 'Unknown';
+  const clientIp = rawIp.replace('::ffff:', '');
   const startTime = Date.now();
 
   const connData = {
@@ -182,21 +174,25 @@ const server = net.createServer({
         const firstLine = dataStr.split('\r\n')[0];
         const path = firstLine.split(' ')[1] || '/';
 
-        // Endpoint Data Real-Time
         if (path === '/api/stats') {
-          const activeList = Array.from(activeConnections.values()).map(c => ({
-            id: c.id,
-            clientIp: c.clientIp,
-            type: c.type,
-            target: c.target,
-            uptime: Math.floor((Date.now() - c.startTime) / 1000),
-            bytesIn: formatBytes(c.bytesIn),
-            bytesOut: formatBytes(c.bytesOut)
-          }));
+          const activeList = Array.from(activeConnections.values())
+            .filter(c => !c.target.includes('railway.com') && !c.target.includes('up.railway.app'))
+            .map(c => ({
+              id: c.id,
+              clientIp: c.clientIp,
+              type: c.type,
+              target: c.target,
+              uptime: Math.floor((Date.now() - c.startTime) / 1000),
+              bytesIn: formatBytes(c.bytesIn),
+              bytesOut: formatBytes(c.bytesOut)
+            }));
+
+          // Hitung Unique Device / Client IP Aktif
+          const uniqueClients = new Set(activeList.map(c => c.clientIp)).size;
 
           const resBody = JSON.stringify({
             proxyInfo: PROXY_SERVER_INFO,
-            totalActive: activeList.length,
+            totalActive: uniqueClients,
             globalTotalIn: formatBytes(globalTotalBytesIn),
             globalTotalOut: formatBytes(globalTotalBytesOut),
             connections: activeList
@@ -207,7 +203,6 @@ const server = net.createServer({
           return;
         }
 
-        // Endpoint Ganti DNS
         if (path.startsWith('/api/set-dns') && dataStr.startsWith('POST')) {
           try {
             const bodyStr = dataStr.split('\r\n\r\n')[1] || '{}';
@@ -238,7 +233,6 @@ const server = net.createServer({
           return;
         }
 
-        // Tampilan Web UI
         if (path === '/' || path === '/index.html') {
           const html = renderDashboardHTML();
           clientSocket.write(`HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(html)}\r\nConnection: close\r\n\r\n${html}`);
@@ -246,14 +240,16 @@ const server = net.createServer({
           return;
         }
 
-        // 2. SCANNER HTTP (speed.cloudflare.com / Web Tester)
+        // 2. SCANNER HTTP
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
         const targetHost = hostMatch ? hostMatch[1].trim() : 'speed.cloudflare.com';
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-        connData.type = 'HTTP SCAN';
-        connData.target = `${targetHost}:${targetPort}`;
-        activeConnections.set(connId, connData);
+        if (!targetHost.includes('railway.com') && !targetHost.includes('up.railway.app')) {
+          connData.type = 'HTTP SCAN';
+          connData.target = `${targetHost}:${targetPort}`;
+          activeConnections.set(connId, connData);
+        }
 
         const resolvedIp = await resolveDomain(targetHost);
         targetSocket = net.connect({ host: resolvedIp, port: targetPort, noDelay: true }, () => {
@@ -274,9 +270,11 @@ const server = net.createServer({
           const targetHost = match[1];
           const targetPort = parseInt(match[2], 10) || 443;
 
-          connData.type = 'HTTPS TUNNEL';
-          connData.target = `${targetHost}:${targetPort}`;
-          activeConnections.set(connId, connData);
+          if (!targetHost.includes('railway.com') && !targetHost.includes('up.railway.app')) {
+            connData.type = 'HTTPS TUNNEL';
+            connData.target = `${targetHost}:${targetPort}`;
+            activeConnections.set(connId, connData);
+          }
 
           const resolvedIp = await resolveDomain(targetHost);
           targetSocket = net.connect({ host: resolvedIp, port: targetPort, noDelay: true }, () => {
@@ -291,13 +289,15 @@ const server = net.createServer({
         }
       }
 
-      // 4. TRAFIK SPEEDTEST & STREAM VLESS / TROJAN
+      // 4. STREAM VLESS / TROJAN (DARKTUNNEL)
       const sni = parseTlsSni(chunk);
       const destinationHost = sni || 'speed.cloudflare.com';
 
-      connData.type = sni ? 'VLESS / TROJAN' : 'RAW TCP';
-      connData.target = `${destinationHost}:443`;
-      activeConnections.set(connId, connData);
+      if (!destinationHost.includes('railway.com') && !destinationHost.includes('up.railway.app')) {
+        connData.type = sni ? 'VLESS / TROJAN' : 'RAW TCP';
+        connData.target = `${destinationHost}:443`;
+        activeConnections.set(connId, connData);
+      }
 
       const resolvedIp = await resolveDomain(destinationHost);
       targetSocket = net.connect({ host: resolvedIp, port: 443, noDelay: true }, () => {
@@ -368,7 +368,6 @@ function renderDashboardHTML() {
     .card { background: #0c121e; border: 1px solid #00ffcc; box-shadow: 0 0 20px rgba(0,255,204,0.15); border-radius: 14px; max-width: 480px; width: 100%; padding: 18px; }
     h2 { margin: 0 0 16px 0; color: #38bdf8; text-align: center; font-size: 1.15rem; letter-spacing: 0.5px; }
     
-    /* Box Info Proxy Server */
     .proxy-box { background: #030712; border: 1px solid #38bdf8; border-radius: 10px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
     .proxy-title { font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px; }
     .proxy-val { font-family: monospace; font-size: 1.05rem; font-weight: bold; color: #39ff14; }
@@ -404,7 +403,6 @@ function renderDashboardHTML() {
   <div class="card">
     <h2>⚡ PROXY MONITOR & DNS</h2>
     
-    <!-- INFO PROXY SERVER & PORT RAILWAY -->
     <div class="proxy-box">
       <div>
         <div class="proxy-title">🚀 Active Proxy Server (IP:Port)</div>
@@ -492,7 +490,7 @@ function renderDashboardHTML() {
         container.innerHTML = data.connections.map(c => \`
           <div class="conn-item">
             <div class="conn-head">
-              <span class="conn-ip">\${c.clientIp.replace('::ffff:', '')}</span>
+              <span class="conn-ip">\${c.clientIp}</span>
               <span class="tag">\${c.type}</span>
             </div>
             <div class="conn-target">🎯 \${c.target}</div>
