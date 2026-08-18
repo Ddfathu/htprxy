@@ -20,9 +20,11 @@ const PRESETS = {
   'google-udp': { name: 'Google UDP (8.8.8.8)', type: 'UDP', host: '8.8.8.8', port: 53 }
 };
 
-// Monitor Koneksi Aktif
+// Monitor Koneksi & Akumulasi Data Total
 const activeConnections = new Map();
 let connectionIdCounter = 0;
+let globalTotalBytesIn = 0;
+let globalTotalBytesOut = 0;
 
 // In-Memory Fast DNS Cache
 const dnsCache = new Map();
@@ -85,7 +87,7 @@ async function resolveDomain(hostname) {
   });
 }
 
-// Server TCP Hybrid + Traffic Tracker
+// Server TCP Hybrid + Real-Time Traffic Tracker
 const server = net.createServer({ 
   noDelay: true,
   allowHalfOpen: false,
@@ -113,8 +115,14 @@ const server = net.createServer({
   let targetSocket = null;
 
   const bridgeSockets = (sockA, sockB) => {
-    sockA.on('data', (d) => { connData.bytesIn += d.length; });
-    sockB.on('data', (d) => { connData.bytesOut += d.length; });
+    sockA.on('data', (d) => { 
+      connData.bytesIn += d.length;
+      globalTotalBytesIn += d.length;
+    });
+    sockB.on('data', (d) => { 
+      connData.bytesOut += d.length;
+      globalTotalBytesOut += d.length;
+    });
 
     sockA.pipe(sockB, { end: true });
     sockB.pipe(sockA, { end: true });
@@ -155,6 +163,8 @@ const server = net.createServer({
 
           const resBody = JSON.stringify({
             totalActive: activeList.length,
+            globalTotalIn: formatBytes(globalTotalBytesIn),
+            globalTotalOut: formatBytes(globalTotalBytesOut),
             connections: activeList
           });
 
@@ -306,7 +316,7 @@ function parseTlsSni(buffer) {
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
@@ -324,10 +334,10 @@ function renderDashboardHTML() {
     .card { background: #0c121e; border: 1px solid #00ffcc; box-shadow: 0 0 20px rgba(0,255,204,0.15); border-radius: 14px; max-width: 480px; width: 100%; padding: 18px; }
     h2 { margin: 0 0 16px 0; color: #38bdf8; text-align: center; font-size: 1.15rem; letter-spacing: 0.5px; }
     
-    .badge-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
-    .badge { background: #030712; border: 1px solid #1e293b; border-radius: 10px; padding: 10px; text-align: center; }
-    .badge h4 { margin: 0; font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; }
-    .badge .val { font-size: 1.35rem; font-weight: bold; color: #39ff14; margin-top: 4px; }
+    .badge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+    .badge { background: #030712; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 10px; text-align: center; }
+    .badge h4 { margin: 0; font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+    .badge .val { font-size: 1.3rem; font-weight: bold; margin-top: 5px; font-family: monospace; }
     
     .section-title { font-size: 0.85rem; font-weight: bold; color: #38bdf8; margin-top: 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
     
@@ -352,14 +362,22 @@ function renderDashboardHTML() {
   <div class="card">
     <h2>⚡ PROXY MONITOR & DNS</h2>
     
-    <div class="badge-bar">
+    <div class="badge-grid">
       <div class="badge">
         <h4>User Konek</h4>
-        <div class="val" id="active_count">0</div>
+        <div class="val" style="color:#39ff14;" id="active_count">0</div>
       </div>
       <div class="badge">
         <h4>Status DNS</h4>
-        <div class="val" style="font-size:1.1rem; color:#38bdf8; line-height:1.8rem;" id="badge_dns">${DNS_CONFIG.mode}</div>
+        <div class="val" style="color:#38bdf8;" id="badge_dns">${DNS_CONFIG.mode}</div>
+      </div>
+      <div class="badge">
+        <h4>Total In (RX)</h4>
+        <div class="val" style="color:#00ffcc;" id="total_rx">0 B</div>
+      </div>
+      <div class="badge">
+        <h4>Total Out (TX)</h4>
+        <div class="val" style="color:#f59e0b;" id="total_tx">0 B</div>
       </div>
     </div>
 
@@ -398,7 +416,10 @@ function renderDashboardHTML() {
       try {
         const res = await fetch('/api/stats');
         const data = await res.json();
+        
         document.getElementById('active_count').innerText = data.totalActive;
+        document.getElementById('total_rx').innerText = data.globalTotalIn;
+        document.getElementById('total_tx').innerText = data.globalTotalOut;
 
         const container = document.getElementById('conn_container');
         if (!data.connections || data.connections.length === 0) {
