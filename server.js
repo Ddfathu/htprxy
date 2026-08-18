@@ -141,7 +141,7 @@ const server = net.createServer({
         const firstLine = dataStr.split('\r\n')[0];
         const path = firstLine.split(' ')[1] || '/';
 
-        // Endpoint JSON Data Koneksi Aktif
+        // Endpoint Data Real-Time
         if (path === '/api/stats') {
           const activeList = Array.from(activeConnections.values()).map(c => ({
             id: c.id,
@@ -163,7 +163,7 @@ const server = net.createServer({
           return;
         }
 
-        // Endpoint Set DNS
+        // Endpoint Ganti DNS
         if (path.startsWith('/api/set-dns') && dataStr.startsWith('POST')) {
           try {
             const bodyStr = dataStr.split('\r\n\r\n')[1] || '{}';
@@ -202,12 +202,12 @@ const server = net.createServer({
           return;
         }
 
-        // 2. SCANNER HTTP (speed.cloudflare.com / Bot)
+        // 2. SCANNER HTTP (speed.cloudflare.com / Web Tester)
         const hostMatch = dataStr.match(/Host:\s*([^\r\n:]+)(?::(\d+))?/i);
         const targetHost = hostMatch ? hostMatch[1].trim() : 'speed.cloudflare.com';
         const targetPort = hostMatch && hostMatch[2] ? parseInt(hostMatch[2], 10) : 80;
 
-        connData.type = 'HTTP SCANNER';
+        connData.type = 'HTTP SCAN';
         connData.target = `${targetHost}:${targetPort}`;
         activeConnections.set(connId, connData);
 
@@ -247,7 +247,7 @@ const server = net.createServer({
         }
       }
 
-      // 4. TRAFIK VLESS / TROJAN STREAM (DARKTUNNEL)
+      // 4. TRAFIK SPEEDTEST & STREAM VLESS / TROJAN
       const sni = parseTlsSni(chunk);
       const destinationHost = sni || 'speed.cloudflare.com';
 
@@ -304,7 +304,7 @@ function parseTlsSni(buffer) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -316,63 +316,59 @@ function renderDashboardHTML() {
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Proxy Monitor & DNS Control</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; background: #06090e; color: #00ffcc; padding: 16px; margin: 0; display: flex; justify-content: center; }
-    .card { background: #0d131f; border: 1px solid #00ffcc; box-shadow: 0 0 25px rgba(0,255,204,0.2); border-radius: 12px; max-width: 600px; width: 100%; padding: 20px; box-sizing: border-box; }
-    h2 { margin-top: 0; color: #38bdf8; text-align: center; font-size: 1.25rem; }
-    .badge-bar { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
-    .badge { flex: 1; background: #020408; border: 1px solid #38bdf8; border-radius: 8px; padding: 12px; text-align: center; }
-    .badge h4 { margin: 0; font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
-    .badge .val { font-size: 1.4rem; font-weight: bold; color: #39ff14; margin-top: 4px; }
-    .section-title { font-size: 0.9rem; font-weight: bold; color: #38bdf8; margin-top: 18px; margin-bottom: 8px; border-bottom: 1px dashed #00ffcc; padding-bottom: 4px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.75rem; font-family: monospace; }
-    th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #1e293b; word-break: break-all; }
-    th { color: #38bdf8; background: #020408; }
-    tr:hover { background: rgba(0, 255, 204, 0.05); }
-    .tag { background: #032b17; color: #39ff14; padding: 2px 6px; border-radius: 4px; border: 1px solid #39ff14; font-size: 0.68rem; font-weight: bold; }
-    select, input { width: 100%; padding: 10px; background: #020408; border: 1px solid #00ffcc; border-radius: 6px; color: #fff; margin-top: 6px; box-sizing: border-box; font-family: monospace; font-size: 0.82rem; }
-    button { width: 100%; padding: 12px; background: #00ffcc; color: #000; font-weight: bold; border: none; border-radius: 6px; margin-top: 14px; cursor: pointer; }
-    button:hover { background: #38bdf8; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #06090e; color: #00ffcc; padding: 14px; margin: 0; display: flex; justify-content: center; }
+    .card { background: #0c121e; border: 1px solid #00ffcc; box-shadow: 0 0 20px rgba(0,255,204,0.15); border-radius: 14px; max-width: 480px; width: 100%; padding: 18px; }
+    h2 { margin: 0 0 16px 0; color: #38bdf8; text-align: center; font-size: 1.15rem; letter-spacing: 0.5px; }
+    
+    .badge-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+    .badge { background: #030712; border: 1px solid #1e293b; border-radius: 10px; padding: 10px; text-align: center; }
+    .badge h4 { margin: 0; font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; }
+    .badge .val { font-size: 1.35rem; font-weight: bold; color: #39ff14; margin-top: 4px; }
+    
+    .section-title { font-size: 0.85rem; font-weight: bold; color: #38bdf8; margin-top: 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+    
+    .conn-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 2px; }
+    .conn-item { background: #030712; border: 1px solid #1e293b; border-left: 3px solid #39ff14; border-radius: 8px; padding: 10px 12px; }
+    .conn-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .conn-ip { font-family: monospace; font-size: 0.85rem; font-weight: bold; color: #f8fafc; }
+    .tag { background: #032b17; color: #39ff14; padding: 2px 6px; border-radius: 4px; border: 1px solid #39ff14; font-size: 0.65rem; font-weight: bold; }
+    .conn-target { font-family: monospace; font-size: 0.75rem; color: #38bdf8; word-break: break-all; margin-bottom: 4px; }
+    .conn-meta { display: flex; justify-content: space-between; font-size: 0.7rem; color: #94a3b8; border-top: 1px dashed #1e293b; padding-top: 4px; margin-top: 4px; }
+    .empty-state { text-align: center; color: #64748b; font-size: 0.8rem; padding: 20px 0; background: #030712; border-radius: 8px; border: 1px dashed #1e293b; }
+    
+    select, input { width: 100%; padding: 10px 12px; background: #030712; border: 1px solid #1e293b; border-radius: 8px; color: #fff; margin-top: 6px; font-family: monospace; font-size: 0.82rem; outline: none; }
+    select:focus, input:focus { border-color: #00ffcc; }
+    button { width: 100%; padding: 12px; background: #00ffcc; color: #000; font-weight: bold; border: none; border-radius: 8px; margin-top: 12px; cursor: pointer; font-size: 0.85rem; }
+    button:active { transform: scale(0.98); }
     .toast { display: none; padding: 8px; text-align: center; border-radius: 6px; margin-top: 10px; font-size: 0.8rem; font-weight: bold; }
     .toast.success { display: block; background: #052e16; color: #4ade80; border: 1px solid #4ade80; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>⚡ PROXY MONITOR & DNS PANEL</h2>
+    <h2>⚡ PROXY MONITOR & DNS</h2>
     
     <div class="badge-bar">
       <div class="badge">
-        <h4>User / IP Konek</h4>
+        <h4>User Konek</h4>
         <div class="val" id="active_count">0</div>
       </div>
       <div class="badge">
         <h4>Status DNS</h4>
-        <div class="val" style="font-size:1rem; color:#38bdf8; line-height:2rem;" id="badge_dns">${DNS_CONFIG.mode}</div>
+        <div class="val" style="font-size:1.1rem; color:#38bdf8; line-height:1.8rem;" id="badge_dns">${DNS_CONFIG.mode}</div>
       </div>
     </div>
 
-    <div class="section-title">🔴 DAFTAR KONEKSI AKTIF (LIVE REAL-TIME)</div>
-    <div style="overflow-x: auto; max-height: 220px; overflow-y: auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>IP Client</th>
-            <th>Type</th>
-            <th>Target Host</th>
-            <th>Durasi</th>
-            <th>Data (In/Out)</th>
-          </tr>
-        </thead>
-        <tbody id="conn_table_body">
-          <tr><td colspan="5" style="text-align:center; color:#64748b;">Belum ada perangkat terhubung...</td></tr>
-        </tbody>
-      </table>
+    <div class="section-title">🟢 KONEKSI AKTIF REAL-TIME</div>
+    <div class="conn-list" id="conn_container">
+      <div class="empty-state">Belum ada perangkat terhubung...</div>
     </div>
 
-    <div class="section-title" style="margin-top:22px;">⚙️ PENGATURAN DNS RESOLVER</div>
+    <div class="section-title" style="margin-top:20px;">⚙️ PENGATURAN DNS RESOLVER</div>
     <select id="preset_select" onchange="applyPreset()">
       <option value="cf-doh" ${DNS_CONFIG.dohUrl.includes('cloudflare') ? 'selected' : ''}>Cloudflare DoH (Official)</option>
       <option value="google-doh" ${DNS_CONFIG.dohUrl.includes('google') ? 'selected' : ''}>Google DoH</option>
@@ -404,25 +400,28 @@ function renderDashboardHTML() {
         const data = await res.json();
         document.getElementById('active_count').innerText = data.totalActive;
 
-        const tbody = document.getElementById('conn_table_body');
+        const container = document.getElementById('conn_container');
         if (!data.connections || data.connections.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#64748b;">Belum ada perangkat terhubung...</td></tr>';
+          container.innerHTML = '<div class="empty-state">Belum ada perangkat terhubung...</div>';
           return;
         }
 
-        tbody.innerHTML = data.connections.map(c => \`
-          <tr>
-            <td>\${c.clientIp.replace('::ffff:', '')}</td>
-            <td><span class="tag">\${c.type}</span></td>
-            <td>\${c.target}</td>
-            <td>\${c.uptime}s</td>
-            <td>\${c.bytesIn} / \${c.bytesOut}</td>
-          </tr>
+        container.innerHTML = data.connections.map(c => \`
+          <div class="conn-item">
+            <div class="conn-head">
+              <span class="conn-ip">\${c.clientIp.replace('::ffff:', '')}</span>
+              <span class="tag">\${c.type}</span>
+            </div>
+            <div class="conn-target">🎯 \${c.target}</div>
+            <div class="conn-meta">
+              <span>⏱️ \${c.uptime} detik</span>
+              <span>📊 RX: \${c.bytesIn} | TX: \${c.bytesOut}</span>
+            </div>
+          </div>
         \`).join('');
       } catch (e) {}
     }
 
-    // Auto-Refresh Real-Time setiap 2 detik
     setInterval(fetchStats, 2000);
     fetchStats();
 
