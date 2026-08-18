@@ -31,18 +31,20 @@ function updateRailwayProxyIP() {
 updateRailwayProxyIP();
 setInterval(updateRailwayProxyIP, 1000 * 60 * 30);
 
+// State Konfigurasi DNS Aktif
 let DNS_CONFIG = {
   mode: 'DOH',
+  activeName: 'Cloudflare DoH (Official)',
   dohUrl: 'https://cloudflare-dns.com/dns-query',
   udpServer: '1.1.1.1',
   udpPort: 53
 };
 
 const PRESETS = {
-  'cf-doh': { name: 'Cloudflare DoH', type: 'DOH', url: 'https://cloudflare-dns.com/dns-query' },
+  'cf-doh': { name: 'Cloudflare DoH (Official)', type: 'DOH', url: 'https://cloudflare-dns.com/dns-query' },
   'google-doh': { name: 'Google DoH', type: 'DOH', url: 'https://dns.google/dns-query' },
-  'quad9-doh': { name: 'Quad9 DoH', type: 'DOH', url: 'https://dns.quad9.net/dns-query' },
-  'adguard-doh': { name: 'AdGuard DoH', type: 'DOH', url: 'https://dns.adguard-dns.com/dns-query' },
+  'quad9-doh': { name: 'Quad9 DoH (Security)', type: 'DOH', url: 'https://dns.quad9.net/dns-query' },
+  'adguard-doh': { name: 'AdGuard DoH (Adblock)', type: 'DOH', url: 'https://dns.adguard-dns.com/dns-query' },
   'cf-udp': { name: 'Cloudflare UDP (1.1.1.1)', type: 'UDP', host: '1.1.1.1', port: 53 },
   'google-udp': { name: 'Google UDP (8.8.8.8)', type: 'UDP', host: '8.8.8.8', port: 53 }
 };
@@ -169,7 +171,7 @@ const server = net.createServer({
       isFirstPacket = false;
       const dataStr = chunk.toString('utf-8');
 
-      // 1. CEK API MONITORING & DASHBOARD
+      // 1. API & DASHBOARD
       if (dataStr.startsWith('GET /') || dataStr.startsWith('POST /api/set-dns')) {
         const firstLine = dataStr.split('\r\n')[0];
         const path = firstLine.split(' ')[1] || '/';
@@ -187,11 +189,11 @@ const server = net.createServer({
               bytesOut: formatBytes(c.bytesOut)
             }));
 
-          // Hitung Unique Device / Client IP Aktif
           const uniqueClients = new Set(activeList.map(c => c.clientIp)).size;
 
           const resBody = JSON.stringify({
             proxyInfo: PROXY_SERVER_INFO,
+            dnsConfig: DNS_CONFIG,
             totalActive: uniqueClients,
             globalTotalIn: formatBytes(globalTotalBytesIn),
             globalTotalOut: formatBytes(globalTotalBytesOut),
@@ -211,13 +213,16 @@ const server = net.createServer({
             if (body.preset && PRESETS[body.preset]) {
               const p = PRESETS[body.preset];
               DNS_CONFIG.mode = p.type;
+              DNS_CONFIG.activeName = p.name;
               if (p.type === 'DOH') DNS_CONFIG.dohUrl = p.url;
               else { DNS_CONFIG.udpServer = p.host; DNS_CONFIG.udpPort = p.port; }
             } else if (body.mode === 'DOH') {
               DNS_CONFIG.mode = 'DOH';
+              DNS_CONFIG.activeName = 'Custom DoH Pribadi';
               DNS_CONFIG.dohUrl = body.dohUrl || 'https://cloudflare-dns.com/dns-query';
             } else if (body.mode === 'UDP') {
               DNS_CONFIG.mode = 'UDP';
+              DNS_CONFIG.activeName = 'Custom DNS UDP Pribadi';
               DNS_CONFIG.udpServer = body.udpServer || '1.1.1.1';
               DNS_CONFIG.udpPort = parseInt(body.udpPort, 10) || 53;
             }
@@ -263,7 +268,7 @@ const server = net.createServer({
         return;
       }
 
-      // 3. HTTPS CONNECT PROXY
+      // 3. HTTPS CONNECT
       if (dataStr.startsWith('CONNECT ')) {
         const match = dataStr.match(/CONNECT\s+([^:\s]+):(\d+)/i);
         if (match) {
@@ -289,7 +294,7 @@ const server = net.createServer({
         }
       }
 
-      // 4. STREAM VLESS / TROJAN (DARKTUNNEL)
+      // 4. STREAM VLESS / TROJAN
       const sni = parseTlsSni(chunk);
       const destinationHost = sni || 'speed.cloudflare.com';
 
@@ -379,6 +384,7 @@ function renderDashboardHTML() {
     .badge { background: #030712; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 10px; text-align: center; }
     .badge h4 { margin: 0; font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
     .badge .val { font-size: 1.3rem; font-weight: bold; margin-top: 5px; font-family: monospace; }
+    .badge .sub-val { font-size: 0.68rem; color: #94a3b8; margin-top: 3px; font-family: monospace; word-break: break-all; }
     
     .section-title { font-size: 0.85rem; font-weight: bold; color: #38bdf8; margin-top: 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
     
@@ -419,7 +425,8 @@ function renderDashboardHTML() {
       </div>
       <div class="badge">
         <h4>Status DNS</h4>
-        <div class="val" style="color:#38bdf8;" id="badge_dns">${DNS_CONFIG.mode}</div>
+        <div class="val" style="color:#38bdf8; font-size:1.05rem;" id="badge_dns_mode">${DNS_CONFIG.mode}</div>
+        <div class="sub-val" id="badge_dns_target">${DNS_CONFIG.mode === 'DOH' ? DNS_CONFIG.dohUrl : DNS_CONFIG.udpServer + ':' + DNS_CONFIG.udpPort}</div>
       </div>
       <div class="badge">
         <h4>Total In (RX)</h4>
@@ -438,10 +445,10 @@ function renderDashboardHTML() {
 
     <div class="section-title" style="margin-top:20px;">⚙️ PENGATURAN DNS RESOLVER</div>
     <select id="preset_select" onchange="applyPreset()">
-      <option value="cf-doh" ${DNS_CONFIG.dohUrl.includes('cloudflare') ? 'selected' : ''}>Cloudflare DoH (Official)</option>
-      <option value="google-doh" ${DNS_CONFIG.dohUrl.includes('google') ? 'selected' : ''}>Google DoH</option>
-      <option value="quad9-doh" ${DNS_CONFIG.dohUrl.includes('quad9') ? 'selected' : ''}>Quad9 DoH (Security)</option>
-      <option value="adguard-doh" ${DNS_CONFIG.dohUrl.includes('adguard') ? 'selected' : ''}>AdGuard DoH (Adblock)</option>
+      <option value="cf-doh">Cloudflare DoH (Official)</option>
+      <option value="google-doh">Google DoH</option>
+      <option value="quad9-doh">Quad9 DoH (Security)</option>
+      <option value="adguard-doh">AdGuard DoH (Adblock)</option>
       <option value="cf-udp">Cloudflare UDP (1.1.1.1:53)</option>
       <option value="google-udp">Google UDP (8.8.8.8:53)</option>
       <option value="custom_doh">✏️ Custom DoH Pribadi (URL)</option>
@@ -449,11 +456,14 @@ function renderDashboardHTML() {
     </select>
 
     <div id="box_custom_doh" style="display:none; margin-top:8px;">
+      <label style="font-size:0.75rem; color:#94a3b8;">Masukkan URL DoH Kustom:</label>
       <input type="text" id="custom_doh_url" placeholder="https://dns.nextdns.io/xxxxxx" value="${DNS_CONFIG.dohUrl}">
     </div>
 
     <div id="box_custom_udp" style="display:none; margin-top:8px;">
+      <label style="font-size:0.75rem; color:#94a3b8;">IP Server DNS UDP:</label>
       <input type="text" id="custom_udp_ip" placeholder="IP: 94.140.14.14" value="${DNS_CONFIG.udpServer}">
+      <label style="font-size:0.75rem; color:#94a3b8; margin-top:4px; display:block;">Port DNS UDP:</label>
       <input type="number" id="custom_udp_port" placeholder="Port: 53" value="${DNS_CONFIG.udpPort || 53}">
     </div>
 
@@ -475,6 +485,13 @@ function renderDashboardHTML() {
           if (data.proxyInfo.domain) {
             document.getElementById('proxy_sub_text').innerText = data.proxyInfo.domain + ':' + data.proxyInfo.port;
           }
+        }
+
+        if (data.dnsConfig) {
+          document.getElementById('badge_dns_mode').innerText = data.dnsConfig.mode + ' (' + (data.dnsConfig.activeName || 'Active') + ')';
+          document.getElementById('badge_dns_target').innerText = data.dnsConfig.mode === 'DOH' 
+            ? data.dnsConfig.dohUrl 
+            : data.dnsConfig.udpServer + ':' + data.dnsConfig.udpPort;
         }
 
         document.getElementById('active_count').innerText = data.totalActive;
@@ -545,9 +562,13 @@ function renderDashboardHTML() {
       });
       const data = await res.json();
       if (data.success) {
-        document.getElementById('badge_dns').innerText = data.config.mode;
+        document.getElementById('badge_dns_mode').innerText = data.config.mode + ' (' + data.config.activeName + ')';
+        document.getElementById('badge_dns_target').innerText = data.config.mode === 'DOH' 
+          ? data.config.dohUrl 
+          : data.config.udpServer + ':' + data.config.udpPort;
+
         const toast = document.getElementById('toast');
-        toast.innerText = '✅ DNS Berhasil Diterapkan!';
+        toast.innerText = '✅ DNS Berhasil Diterapkan ke ' + data.config.activeName + '!';
         toast.className = 'toast success';
         setTimeout(() => toast.style.display = 'none', 3000);
       }
