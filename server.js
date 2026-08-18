@@ -3,6 +3,39 @@ import dns from 'dns';
 
 const PORT = process.env.PORT || 8080;
 
+// Baca Environment Variables Railway
+const TCP_DOMAIN = process.env.RAILWAY_TCP_PROXY_DOMAIN || '';
+const TCP_PORT = process.env.RAILWAY_TCP_PROXY_PORT || '';
+
+// State Info Server Proxy Railway
+let PROXY_SERVER_INFO = {
+  domain: TCP_DOMAIN,
+  port: TCP_PORT,
+  ip: '',
+  fullProxy: ''
+};
+
+// Auto Resolve TCP Domain ke Real IP saat startup
+function updateRailwayProxyIP() {
+  if (TCP_DOMAIN) {
+    dns.lookup(TCP_DOMAIN, (err, address) => {
+      if (!err && address) {
+        PROXY_SERVER_INFO.ip = address;
+        PROXY_SERVER_INFO.fullProxy = `${address}:${TCP_PORT}`;
+        console.log(`[RAILWAY PROXY DETECTED] -> ${PROXY_SERVER_INFO.fullProxy}`);
+      } else {
+        PROXY_SERVER_INFO.ip = TCP_DOMAIN;
+        PROXY_SERVER_INFO.fullProxy = `${TCP_DOMAIN}:${TCP_PORT}`;
+      }
+    });
+  } else {
+    PROXY_SERVER_INFO.fullProxy = 'TCP Proxy Not Set';
+  }
+}
+updateRailwayProxyIP();
+// Refresh resolusi domain Railway setiap 30 menit
+setInterval(updateRailwayProxyIP, 1000 * 60 * 30);
+
 // State Konfigurasi DNS Aktif
 let DNS_CONFIG = {
   mode: 'DOH',
@@ -162,6 +195,7 @@ const server = net.createServer({
           }));
 
           const resBody = JSON.stringify({
+            proxyInfo: PROXY_SERVER_INFO,
             totalActive: activeList.length,
             globalTotalIn: formatBytes(globalTotalBytesIn),
             globalTotalOut: formatBytes(globalTotalBytesOut),
@@ -334,6 +368,14 @@ function renderDashboardHTML() {
     .card { background: #0c121e; border: 1px solid #00ffcc; box-shadow: 0 0 20px rgba(0,255,204,0.15); border-radius: 14px; max-width: 480px; width: 100%; padding: 18px; }
     h2 { margin: 0 0 16px 0; color: #38bdf8; text-align: center; font-size: 1.15rem; letter-spacing: 0.5px; }
     
+    /* Box Info Proxy Server */
+    .proxy-box { background: #030712; border: 1px solid #38bdf8; border-radius: 10px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+    .proxy-title { font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px; }
+    .proxy-val { font-family: monospace; font-size: 1.05rem; font-weight: bold; color: #39ff14; }
+    .proxy-sub { font-family: monospace; font-size: 0.7rem; color: #64748b; margin-top: 2px; }
+    .btn-copy { background: #1e293b; border: 1px solid #38bdf8; color: #38bdf8; padding: 8px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; cursor: pointer; }
+    .btn-copy:active { background: #38bdf8; color: #000; }
+
     .badge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
     .badge { background: #030712; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 10px; text-align: center; }
     .badge h4 { margin: 0; font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -341,7 +383,7 @@ function renderDashboardHTML() {
     
     .section-title { font-size: 0.85rem; font-weight: bold; color: #38bdf8; margin-top: 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
     
-    .conn-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 2px; }
+    .conn-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; padding-right: 2px; }
     .conn-item { background: #030712; border: 1px solid #1e293b; border-left: 3px solid #39ff14; border-radius: 8px; padding: 10px 12px; }
     .conn-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
     .conn-ip { font-family: monospace; font-size: 0.85rem; font-weight: bold; color: #f8fafc; }
@@ -362,6 +404,16 @@ function renderDashboardHTML() {
   <div class="card">
     <h2>⚡ PROXY MONITOR & DNS</h2>
     
+    <!-- INFO PROXY SERVER & PORT RAILWAY -->
+    <div class="proxy-box">
+      <div>
+        <div class="proxy-title">🚀 Active Proxy Server (IP:Port)</div>
+        <div class="proxy-val" id="proxy_full_text">${PROXY_SERVER_INFO.fullProxy || 'Loading IP...'}</div>
+        <div class="proxy-sub" id="proxy_sub_text">${PROXY_SERVER_INFO.domain ? PROXY_SERVER_INFO.domain + ':' + PROXY_SERVER_INFO.port : 'Railway Direct'}</div>
+      </div>
+      <button type="button" class="btn-copy" onclick="copyProxy()">📋 SALIN</button>
+    </div>
+
     <div class="badge-grid">
       <div class="badge">
         <h4>User Konek</h4>
@@ -412,11 +464,21 @@ function renderDashboardHTML() {
   </div>
 
   <script>
+    let currentProxyString = "${PROXY_SERVER_INFO.fullProxy}";
+
     async function fetchStats() {
       try {
         const res = await fetch('/api/stats');
         const data = await res.json();
         
+        if (data.proxyInfo && data.proxyInfo.fullProxy) {
+          currentProxyString = data.proxyInfo.fullProxy;
+          document.getElementById('proxy_full_text').innerText = data.proxyInfo.fullProxy;
+          if (data.proxyInfo.domain) {
+            document.getElementById('proxy_sub_text').innerText = data.proxyInfo.domain + ':' + data.proxyInfo.port;
+          }
+        }
+
         document.getElementById('active_count').innerText = data.totalActive;
         document.getElementById('total_rx').innerText = data.globalTotalIn;
         document.getElementById('total_tx').innerText = data.globalTotalOut;
@@ -445,6 +507,16 @@ function renderDashboardHTML() {
 
     setInterval(fetchStats, 2000);
     fetchStats();
+
+    function copyProxy() {
+      if (!currentProxyString) return;
+      navigator.clipboard.writeText(currentProxyString).then(() => {
+        const toast = document.getElementById('toast');
+        toast.innerText = '📋 IP:Port Berhasil Disalin: ' + currentProxyString;
+        toast.className = 'toast success';
+        setTimeout(() => toast.style.display = 'none', 2500);
+      });
+    }
 
     function applyPreset() {
       const val = document.getElementById('preset_select').value;
